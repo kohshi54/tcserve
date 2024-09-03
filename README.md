@@ -1,2 +1,2 @@
 # tcserve
-hopefully reply HTTP response from ebpf program attached on tc...!?
+hopefully reply HTTP request from ebpf program attached on tc...!?
