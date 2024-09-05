@@ -14,7 +14,6 @@
 int tc_serve(struct __sk_buff *skb) {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
-    int rcvdatalen = data_end - data;
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end)
@@ -194,8 +193,9 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         uint32_t prevseq = ntohl(tcp->seq);
         long pay_size = (char *)data_end - payload2;
         __be32 prev_ackseq = tcp->ack_seq;
-        //tcp->ack_seq = (__be32)htonl(prevseq + pay_size);
-        //bpf_trace_printk("prevseq=%ld, paysize=%ld, newack=%ld", prevseq, pay_size, ntohl(tcp->ack_seq));
+        //tcp->ack_seq = (__be32)htonl(prevseq + pay_size + 1);
+        tcp->ack_seq = (__be32)htonl(prevseq + pay_size);
+        bpf_trace_printk("prevseq=%ld, paysize=%ld, newack=%ld", prevseq, pay_size, ntohl(tcp->ack_seq));
 
 //*/
         tcp->fin = 0;
@@ -204,7 +204,7 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         tcp->psh = 1;
         tcp->ack = 1;
 
-	    bpf_clone_redirect(skb, skb->ifindex, 0);
+	    //bpf_clone_redirect(skb, skb->ifindex, 0); //ack kaesu
 
 
         
@@ -267,15 +267,15 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
 
 
         //tcp->doff = sizeof(struct tcphdr) / 4;
-        //tcp->ack_seq = htonl(ntohl(tcp->seq) + rcvdatalen); 
-        //tcp->seq = htonl(ntohl(tcp->ack_seq));
+        //tcp->seq = prev_ackseq + htonl(1);
+        tcp->seq = prev_ackseq;
         //tcp->ack_seq = htonl(ntohl(tcp->seq) + 1);
 
         tcp->fin = 0;
-        tcp->syn = 1;
+        tcp->syn = 0;
         tcp->rst = 0;
         tcp->psh = 1;
-        tcp->ack = 0;
+        tcp->ack = 1;
 
         memcpy(payload, HTTP_RESPONSE, HTTP_RESPONSE_LEN);
 
