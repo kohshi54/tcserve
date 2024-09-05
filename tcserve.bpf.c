@@ -109,13 +109,12 @@ bpf_trace_printk("before adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp-
     if (__builtin_memcmp(payload, HTTP_GET, HTTP_GET_LEN) == 0) {
     bpf_trace_printk("in");
     // packet size fuyasu
-    bpf_skb_change_tail(skb, HTTP_RESPONSE_LEN, 0);
+    bpf_skb_change_tail(skb, HTTP_RESPONSE_LEN * 7, 0); // payload size ga daini2 hikisuuninaltuteru?
 /* kottchi dato l3 no space ga fuerudake de l4 no space ha fuenai.
         if (bpf_skb_adjust_room(skb, HTTP_RESPONSE_LEN, BPF_ADJ_ROOM_NET, 0)) {
             return TC_ACT_SHOT;
         }
 */
-    bpf_trace_printk("in2");
 
         // Re-fetch pointers after adjusting the packet
         data = (void *)(long)skb->data;
@@ -132,20 +131,31 @@ bpf_trace_printk("before adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp-
         //if (ip->protocol != IPPROTO_TCP)
         //    return TC_ACT_OK;
 
-    bpf_trace_printk("in3");
         tcp = (struct tcphdr *)((char *)ip + sizeof(struct iphdr));
         //tcp = (struct tcphdr *)((char *)ip + sizeof(struct iphdr) + HTTP_RESPONSE_LEN);
         if ((void *)tcp + sizeof(struct tcphdr) > data_end)
             return TC_ACT_OK;
+bpf_trace_printk("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+    tcp_data_offset = tcp->doff * 4;
+    payload = (char *)tcp + tcp_data_offset;
+    payload_size1 = (char *)data_end - payload;
+    packet_size = ip->tot_len;
+    all_size = data_end - data;
+    phead = payload - (char *)data;
+ 
 bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->dest));
+    bpf_trace_printk("after adjust, payloadsize=%d, packaetsize=%d", payload_size1, all_size);
+    bpf_trace_printk("after adjust, phead=%d, ptail=%d", phead, phead+payload_size1);
 
         tcp_data_offset = tcp->doff * 4;
         payload = (char *)tcp + tcp_data_offset;
         if ((void *)tcp + tcp_data_offset > data_end)
             return TC_ACT_OK;
 
+    bpf_trace_printk("in2");
         if ((void *)(payload + HTTP_RESPONSE_LEN) > data_end)
             return TC_ACT_OK;
+    bpf_trace_printk("in333333333333333333");
 
         int new_tot_len = bpf_ntohs(ip->tot_len) + HTTP_RESPONSE_LEN;
         ip->tot_len = bpf_htons(new_tot_len);
@@ -208,6 +218,15 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         tcp->ack = 1;
 
         memcpy(payload, HTTP_RESPONSE, HTTP_RESPONSE_LEN);
+
+        #pragma clang loop unroll(full)
+        for (int i = 0; i < HTTP_RESPONSE_LEN; i++) { // response hyouji
+            if ((void *)(payload + i + 1) > data_end) {
+                return TC_ACT_OK;
+            }
+            bpf_trace_printk("res=%c", payload[i] - 0);
+        }
+
 
         //bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), 0, 0, BPF_F_HDR_FIELD_MASK);
         //bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), 0, 0, BPF_F_PSEUDO_HDR | BPF_F_HDR_FIELD_MASK);
