@@ -1,0 +1,135 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#include <linux/bpf.h>
+#include <linux/pkt_cls.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/in.h>
+//#include <bpf/bpf_helpers.h>
+//#include <linux/bpf_endian.h>
+
+#define HTTP_GET "GET "
+#define HTTP_GET_LEN 4
+//#define HTTP_404_RESPONSE "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+//#define HTTP_404_RESPONSE_LEN 38
+#define ADDITIONAL_DATA "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!"
+#define ADDITIONAL_DATA_LEN 77
+
+//SEC("tc")
+int tc_serve(struct __sk_buff *skb) {
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	
+	struct ethhdr *eth = data;
+	if ((void *)(eth + 1) > data_end)
+	    return TC_ACT_OK;
+	
+	if (eth->h_proto != __constant_htons(ETH_P_IP))
+	    return TC_ACT_OK;
+	
+	struct iphdr *ip = (struct iphdr *)(data + sizeof(struct ethhdr));
+	if ((void *)(ip + 1) > data_end)
+	    return TC_ACT_OK;
+	
+	if (ip->protocol != IPPROTO_TCP)
+	    return TC_ACT_OK;
+	
+	int ip_header_len = ip->ihl * 4;
+	if ((void *)ip + ip_header_len > data_end)  // IPヘッダーの境界チェック
+	    return TC_ACT_OK;
+	
+	struct tcphdr *tcp = (struct tcphdr *)((char *)ip + ip_header_len);
+	if ((void *)tcp + sizeof(struct tcphdr) > data_end)
+	    return TC_ACT_OK;
+	
+	int tcp_data_offset = tcp->doff * 4;
+	if ((void *)tcp + tcp_data_offset > data_end)  // TCPヘッダーとデータの境界チェック
+	    return TC_ACT_OK;
+	
+	char *payload = (char *)tcp + tcp_data_offset;
+	bpf_trace_printk("TCP data offset: %d\n", tcp->doff);
+	bpf_trace_printk("Payload start: %p, data end: %p\n", payload, data_end);
+	bpf_trace_printk("TCP flags: %02x\n", tcp->fin | (tcp->syn << 1) | (tcp->rst << 2) | (tcp->psh << 3) | (tcp->ack << 4) | (tcp->urg << 5));
+	bpf_trace_printk("TCP seq: %u, TCP ack_seq: %u\n", bpf_ntohl(tcp->seq), bpf_ntohl(tcp->ack_seq));
+	
+	if ((void *)(payload + 4) > data_end)
+	    return TC_ACT_OK;
+	
+	bpf_trace_printk("Payload bytes: %02x %02x \n", payload[0], payload[1]);
+	    bpf_trace_printk("hello3");
+	bpf_trace_printk("Payload bytes: %02x %02x \n", payload[2], payload[3]);
+
+    bpf_trace_printk("hello3");
+
+ 
+    // Check for HTTP GET request
+    if (__builtin_memcmp(payload, HTTP_GET, HTTP_GET_LEN) == 0) {
+    	bpf_trace_printk("in");
+        // Adjust packet size to accommodate additional data
+        if (bpf_skb_adjust_room(skb, ADDITIONAL_DATA_LEN, BPF_ADJ_ROOM_NET, 0)) {
+            return TC_ACT_SHOT; // Drop the packet if adjustment fails
+        }
+
+        // Re-fetch the pointers after adjusting room
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+
+        // Re-assign structures with new data pointers
+        eth = data;
+        ip = data + sizeof(*eth);
+
+        if ((void *)(ip + 1) > data_end) return TC_ACT_SHOT;
+        if (ip->protocol != IPPROTO_TCP) return TC_ACT_OK;
+
+        ip_header_len = ip->ihl * 4;
+        if ((void *)ip + ip_header_len > data_end) return TC_ACT_SHOT;
+
+        tcp = (void *)ip + ip_header_len;
+        if ((void *)tcp + sizeof(struct tcphdr) > data_end) return TC_ACT_SHOT;
+
+        payload = (void *)tcp + tcp->doff * 4;
+        if ((void *)(payload + HTTP_GET_LEN + ADDITIONAL_DATA_LEN) > data_end) return TC_ACT_SHOT;
+
+        // Insert additional data
+        __builtin_memcpy(payload + HTTP_GET_LEN, ADDITIONAL_DATA, ADDITIONAL_DATA_LEN);
+
+        // Update IP total length
+        int new_tot_len = bpf_ntohs(ip->tot_len) + ADDITIONAL_DATA_LEN;
+        ip->tot_len = bpf_htons(new_tot_len);
+
+	/*
+
+        // Reset IP checksum
+        ip->check = 0;
+	if ((void *)ip + ip_header_len <= data_end) {
+            ip->check = bpf_csum_diff(0, 0, (__be32 *)ip, ip_header_len, 0);
+        }
+
+        // Recalculate TCP checksum
+        tcp->check = 0;
+        tcp->check = bpf_csum_diff(0, 0, (__be32 *)tcp, new_tot_len - ip_header_len, 0);
+	*/
+
+// Reset IP checksum to 0 before recalculating
+ip->check = 0;
+if ((void *)ip + ip_header_len <= data_end) {
+    // Recalculate IP checksum using bpf_l3_csum_replace
+    bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), 0, 0, 0);
+}
+
+// Reset TCP checksum to 0 before recalculating
+tcp->check = 0;
+if ((void *)tcp + sizeof(struct tcphdr) <= data_end) {
+    // Recalculate TCP checksum using bpf_l4_csum_replace
+    bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), 0, 0, 0);
+}
+        //return TC_ACT_OK;
+        return TC_ACT_SHOT;
+    }
+
+    return TC_ACT_OK;
+}
+
+
+//char _license[] SEC("license") = "GPL";
+

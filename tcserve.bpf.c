@@ -3,13 +3,50 @@
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
-//#include "network.h"
+#include "network.h"
 //#include <ctype.h>
 
 #define HTTP_GET "GET "
 #define HTTP_GET_LEN 4
 #define HTTP_RESPONSE "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!"
 #define HTTP_RESPONSE_LEN 77
+
+#define IP_CSUM_OFF (ETH_HLEN + offsetof(struct iphdr, check))
+#define TCP_CSUM_OFF (ETH_HLEN + sizeof(struct iphdr) + offsetof(struct tcphdr, check))
+
+
+/*
+static __always_inline void update_csum(struct __sk_buff *skb, __u32 *old_ip_ptr, __u32 *new_ip_ptr) {
+        bpf_l4_csum_replace(skb, TCP_CSUM_OFF, *old_ip_ptr, *new_ip_ptr, 4);
+        bpf_l3_csum_replace(skb, IP_CSUM_OFF, *old_ip_ptr, *new_ip_ptr, 4);
+}
+*/
+
+//static __always_inline void update_ip_csum(struct iphdr *iph, void *data_end) {
+//    unsigned int count = iph->ihl << 2;
+//    unsigned short *addr = iph;
+//
+//    iph->check = 0;
+//    register unsigned long sum = 0;
+//
+//    while(count > 1) {
+//        /* This is the inner loop */
+//        if (addr + 1 > data_end)
+//            return TC_ACT_OK;
+//        sum += * (unsigned short *) addr++;
+//        count -= 2;
+//    }
+//
+//    /*  Add left-over byte, if any */
+//    if (count > 0)
+//        sum += * (unsigned char *) addr;
+//
+//    /*  Fold 32-bit sum to 16 bits */
+//    while (sum>>16)
+//        sum = (sum & 0xffff) + (sum >> 16);
+//
+//    iph->check = ~sum;
+//}
 
 int tc_serve(struct __sk_buff *skb) {
     void *data = (void *)(long)skb->data;
@@ -64,6 +101,7 @@ bpf_trace_printk("before adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp-
     int recv_payload = payload_size1;
     //int packet_size = data_end - data;
     __be16 packet_size = ip->tot_len;
+    __be16 old_tot_len = ip->tot_len;
     //int payload_size = packet_size - (ip->ihl * 4 + tcp->doff * 4);
     //bpf_trace_printk("xxxxxxxxxxxxxxx=%d", payload_size);
     
@@ -113,63 +151,13 @@ bpf_trace_printk("before adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp-
         }
 */
 
-/*
-        // Re-fetch pointers after adjusting the packet
-        data = (void *)(long)skb->data;
-        data_end = (void *)(long)skb->data_end;
-
-        eth = data;
-        if ((void *)(eth + 1) > data_end)
-            return TC_ACT_OK;
-
-        ip = data + sizeof(struct ethhdr);
-        if ((void *)(ip + 1) > data_end)
-            return TC_ACT_SHOT;
-
-        //if (ip->protocol != IPPROTO_TCP)
-        //    return TC_ACT_OK;
-
-        tcp = (struct tcphdr *)((char *)ip + sizeof(struct iphdr));
-        //tcp = (struct tcphdr *)((char *)ip + sizeof(struct iphdr) + HTTP_RESPONSE_LEN);
-        if ((void *)tcp + sizeof(struct tcphdr) > data_end)
-            return TC_ACT_OK;
-*/
-/*
-bpf_trace_printk("xxxxxxxxxxxxxxxxxxxxxxxxxxxx");
-    tcp_data_offset = tcp->doff * 4;
-    payload = (char *)tcp + tcp_data_offset;
-    payload_size1 = (char *)data_end - payload;
-    packet_size = ip->tot_len;
-    all_size = data_end - data;
-    phead = payload - (char *)data;
- 
-bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->dest));
-    bpf_trace_printk("after adjust, payloadsize=%d, packaetsize=%d", payload_size1, all_size);
-    bpf_trace_printk("after adjust, phead=%d, ptail=%d", phead, phead+payload_size1);
-
-        tcp_data_offset = tcp->doff * 4;
-        payload = (char *)tcp + tcp_data_offset;
-        if ((void *)tcp + tcp_data_offset > data_end)
-            return TC_ACT_OK;
-*/
-
-/*
-    bpf_trace_printk("in2");
-        if ((void *)(payload + HTTP_RESPONSE_LEN) > data_end)
-            return TC_ACT_OK;
-    bpf_trace_printk("in333333333333333333");
-*/
-
- //       int new_tot_len = bpf_ntohs(ip->tot_len) + HTTP_RESPONSE_LEN;
- //       ip->tot_len = bpf_htons(new_tot_len);
-
 	    //__u32 src_ip = ntohl(ip->saddr);
 	    //__u32 dst_ip = ntohl(ip->daddr);
 	    __u32 src_ip = ip->saddr;
 	    __u32 dst_ip = ip->daddr;
         ip->saddr = dst_ip;
         ip->daddr = src_ip;
-        ip->ttl = 125;
+        //ip->ttl = 125;
 
         unsigned char src_mac[6];
         unsigned char dst_mac[6];
@@ -204,7 +192,7 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         tcp->psh = 1;
         tcp->ack = 1;
 
-	    //bpf_clone_redirect(skb, skb->ifindex, 0); //ack kaesu
+	    //bpf_clone_redirect(skb, skb->ifindex, 0); //ack kaesu -> atode issoni kaesu
 
 
         
@@ -215,7 +203,7 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
         ip = data + sizeof(struct ethhdr);
         if ((void *)(ip + 1) > data_end) return TC_ACT_SHOT;
-        ip->ttl = 121;
+        //ip->ttl = 121;
 
         int new_tot_len = bpf_ntohs(ip->tot_len) + HTTP_RESPONSE_LEN;
         ip->tot_len = bpf_htons(new_tot_len);
@@ -243,13 +231,13 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
 
         if ((void *)(payload + HTTP_RESPONSE_LEN) > data_end) return TC_ACT_OK;
 
+
+        bpf_trace_printk("%s", payload); //'HTTP/1.1 200 OK
+/*
         //payload[0] = 'H';
         //payload[1] = 'T';
         //payload[2] = 'T';
         //payload[3] = 'P';
-
-        bpf_trace_printk("%s", payload); //'HTTP/1.1 200 OK
-/*
         bpf_trace_printk("%u", payload[0]);
         bpf_trace_printk("%u", payload[1]);
         bpf_trace_printk("%u", payload[2]);
@@ -288,6 +276,61 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         }
 
 
+       // update_ip_csum(ip);
+        csum_replace2(&ip->check, src_ip, ip->saddr);
+        csum_replace2(&ip->check, dst_ip, ip->daddr);
+        csum_replace2(&ip->check, old_tot_len, ip->tot_len);
+
+/*
+    unsigned int count = ip->ihl << 2;
+    unsigned short *addr = ip;
+
+    ip->check = 0;
+    register unsigned long sum = 0;
+
+    int cc = count / 2;
+    int ccd = count % 2;
+
+    #pragma clang loop unroll(full)
+    for (int i = 0; i < cc; i++) {
+        if ((void *)addr + 1 > data_end)
+            return TC_ACT_OK;
+        unsigned short tmp = *addr;
+        sum += tmp;
+        addr++;
+    }
+
+    if (ccd) {
+        if ((void *)addr + 1 > data_end)
+            return TC_ACT_OK;
+        unsigned int tt = * (unsigned char *) addr;
+        sum += tt;
+    }
+*/
+
+    //while (count > 1) {
+    //    /* This is the inner loop */
+    //    unsigned int tmp = *(unsigned short *)addr++;
+    //    sum += tmp;
+    //    count -= 2;
+    //}
+
+    /*  Add left-over byte, if any */
+    //if (count > 0) {
+    //    unsigned int tt = * (unsigned char *) addr;
+    //    sum += tt;
+    //}
+
+    /*  Fold 32-bit sum to 16 bits */
+    //while (sum>>16)
+    //    sum = (sum & 0xffff) + (sum >> 16);
+
+    //ip->check = ~sum;
+
+
+
+
+
         //update_ip_checksum(ip);
         //update_tcp_checksum(ip, tcp, data_end - (void *)tcp);
         //update_tcp_checksum(ip, tcp, 11);
@@ -295,12 +338,46 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         //bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), 0, 0, BPF_F_HDR_FIELD_MASK);
         //bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), 0, 0, BPF_F_PSEUDO_HDR | BPF_F_HDR_FIELD_MASK);
 
-
 /*
-        bpf_l3_csum_replace(skb, IP_CSUM_OFF, dst_ip, ip->saddr, 4);
-        bpf_l3_csum_replace(skb, IP_CSUM_OFF, src_ip, ip->daddr, 4);
-        bpf_l4_csum_replace(skb, TCP_CSUM_OFF, src_port, tcp->dest, 4);
-        bpf_l4_csum_replace(skb, TCP_CSUM_OFF, dst_port, tcp->source, 4);
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        eth = data;
+        if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+        ip = data + sizeof(struct ethhdr);
+        if ((void *)(ip + 1) > data_end) return TC_ACT_SHOT;
+        
+        bpf_l3_csum_replace(skb, IP_CSUM_OFF, src_ip, ip->saddr, 4);
+        
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        eth = data;
+        if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+        ip = data + sizeof(struct ethhdr);
+        if ((void *)(ip + 1) > data_end) return TC_ACT_SHOT;
+        
+        bpf_l3_csum_replace(skb, IP_CSUM_OFF, dst_ip, ip->daddr, 4);
+        
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        eth = data;
+        if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+        ip = data + sizeof(struct ethhdr);
+        if ((void *)(ip + 1) > data_end) return TC_ACT_SHOT;
+        tcp = (struct tcphdr *)((char *)ip + sizeof(struct iphdr));
+        if ((void *)tcp + sizeof(struct tcphdr) > data_end) return TC_ACT_OK;
+        
+        bpf_l4_csum_replace(skb, TCP_CSUM_OFF, src_port, tcp->source, 2);
+        
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        eth = data;
+        if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+        ip = data + sizeof(struct ethhdr);
+        if ((void *)(ip + 1) > data_end) return TC_ACT_SHOT;
+        tcp = (struct tcphdr *)((char *)ip + sizeof(struct iphdr));
+        if ((void *)tcp + sizeof(struct tcphdr) > data_end) return TC_ACT_OK;
+        
+        bpf_l4_csum_replace(skb, TCP_CSUM_OFF, dst_port, tcp->dest, 2);
 */
 
 	    bpf_clone_redirect(skb, skb->ifindex, 0);
