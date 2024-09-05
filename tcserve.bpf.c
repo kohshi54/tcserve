@@ -3,7 +3,8 @@
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
-#include "network.h"
+//#include "network.h"
+//#include <ctype.h>
 
 #define HTTP_GET "GET "
 #define HTTP_GET_LEN 4
@@ -42,7 +43,7 @@ int tc_serve(struct __sk_buff *skb) {
 
 bpf_trace_printk("before adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->dest));
 
-    bpf_trace_printk("here1");
+    //bpf_trace_printk("here1");
     int tcp_data_offset = tcp->doff * 4;
     char *payload = (char *)tcp + tcp_data_offset;
     //char *payload = (char *)tcp + sizeof(struct tcphdr);
@@ -50,16 +51,60 @@ bpf_trace_printk("before adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp-
     if ((void *)tcp + tcp_data_offset > data_end)
         return TC_ACT_OK;
 
-    bpf_trace_printk("here2");
+    //bpf_trace_printk("here2");
     // Check for HTTP GET request
     if ((void *)(payload + HTTP_GET_LEN) > data_end)
         return TC_ACT_OK;
 
+    int payload_size1 = (char *)data_end - payload;
+    //int packet_size = data_end - data;
+    __be16 packet_size = ip->tot_len;
+    //int payload_size = packet_size - (ip->ihl * 4 + tcp->doff * 4);
+    //bpf_trace_printk("xxxxxxxxxxxxxxx=%d", payload_size);
+    
+    int all_size = data_end - data;
+    int phead = payload - (char *)data;
+    bpf_trace_printk("payloadsize=%d, packaetsize=%d", payload_size1, all_size);
+    bpf_trace_printk("phead=%d, ptail=%d", phead, phead+payload_size1);
+
+    if (payload_size1 > 0) {
+        if ((void *)(payload + payload_size1) > data_end)
+            return TC_ACT_OK;
+
+        //limit iteration num (limit sinaito verfier tooranai)
+        if (payload_size1 > 100) {
+            payload_size1 = 100;
+        }
+
+        #pragma clang loop unroll(full)
+        for (int i = 0; i < payload_size1; i++) {
+            // kokonazehituyounanokafumei, uedekakuninnsiterunoni...?
+            if ((void *)(payload + i + 1) > data_end) {
+                return TC_ACT_OK;
+            }
+            bpf_trace_printk("%c", payload[i] - 0);
+            //if (isprint(payload[i]) {
+            //if (32 <= payload[i] && payload[i] <= 126) {
+            //    break;
+            //}
+        }
+    }
+
     bpf_trace_printk("here3");
+/*
     bpf_trace_printk("%u", payload[0]); //71 'G'
     bpf_trace_printk("%u", payload[1]); //69 'E'
     bpf_trace_printk("%u", payload[2]); //84 'T'
     bpf_trace_printk("%u", payload[3]); //32 ' '
+    bpf_trace_printk("%s", payload);
+*/
+
+/*
+    #pragma clang loop unroll(full)
+    for (int i = 0; i < 4; i++) {
+        bpf_trace_printk("%c", payload[i] - 0);
+    }
+*/
 
     if (__builtin_memcmp(payload, HTTP_GET, HTTP_GET_LEN) == 0) {
     bpf_trace_printk("in");
@@ -111,6 +156,7 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
 	    __u32 dst_ip = ip->daddr;
         ip->saddr = dst_ip;
         ip->daddr = src_ip;
+        ip->ttl = 125;
 
         unsigned char src_mac[6];
         unsigned char dst_mac[6];
@@ -174,8 +220,8 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         bpf_l4_csum_replace(skb, TCP_CSUM_OFF, dst_port, tcp->source, 4);
 */
 
-	    //bpf_clone_redirect(skb, skb->ifindex, 0);
-	    bpf_redirect(skb->ifindex, 0);
+	    bpf_clone_redirect(skb, skb->ifindex, 0);
+	    //bpf_redirect(skb->ifindex, 0);
         return TC_ACT_SHOT;
     }
 
