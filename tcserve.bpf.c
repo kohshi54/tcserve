@@ -41,6 +41,11 @@ int tc_serve(struct __sk_buff *skb) {
     if ((void *)tcp + sizeof(struct tcphdr) > data_end)
         return TC_ACT_OK;
 
+    if (ntohs(tcp->dest) != 80) {
+        return TC_ACT_OK;
+    }
+
+
 bpf_trace_printk("before adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->dest));
 
     //bpf_trace_printk("here1");
@@ -190,6 +195,8 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         //payload[2] = 'T';
         //payload[3] = 'P';
 
+        bpf_trace_printk("%s", payload); //'HTTP/1.1 200 OK
+/*
         bpf_trace_printk("%u", payload[0]);
         bpf_trace_printk("%u", payload[1]);
         bpf_trace_printk("%u", payload[2]);
@@ -197,13 +204,13 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         bpf_trace_printk("%u", payload[4]);
         bpf_trace_printk("%u", payload[5]);
         bpf_trace_printk("%u", payload[6]);
-        bpf_trace_printk("%s", payload); //'HTTP/1.1 200 OK
         bpf_trace_printk("%u", payload[17]); //'C'
         bpf_trace_printk("%u", payload[18]); //'o'
         bpf_trace_printk("%u", payload[19]); //'n'
         bpf_trace_printk("%u", payload[20]); //'t'
         bpf_trace_printk("%u", payload[21]); //'e'
         bpf_trace_printk("%u", payload[22]); //'n'
+*/
 
 
         tcp->doff = sizeof(struct tcphdr) / 4;
@@ -228,6 +235,10 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
         }
 
 
+        //update_ip_checksum(ip);
+        //update_tcp_checksum(ip, tcp, data_end - (void *)tcp);
+        //update_tcp_checksum(ip, tcp, 11);
+
         //bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), 0, 0, BPF_F_HDR_FIELD_MASK);
         //bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), 0, 0, BPF_F_PSEUDO_HDR | BPF_F_HDR_FIELD_MASK);
 
@@ -240,7 +251,29 @@ bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->
 */
 
 	    bpf_clone_redirect(skb, skb->ifindex, 0);
-	    //bpf_redirect(skb->ifindex, 0);
+
+        // mottkai pointer check
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        eth = data;
+        if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+        ip = data + sizeof(struct ethhdr);
+        if ((void *)(ip + 1) > data_end) return TC_ACT_SHOT;
+        ip->ttl = 126;
+ 
+	    bpf_clone_redirect(skb, skb->ifindex, 0);
+
+        // mottkai pointer check
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        eth = data;
+        if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+        ip = data + sizeof(struct ethhdr);
+        if ((void *)(ip + 1) > data_end) return TC_ACT_SHOT;
+        ip->ttl = 127;
+ 
+	    bpf_clone_redirect(skb, skb->ifindex, 0);
+
         return TC_ACT_SHOT;
     }
 
