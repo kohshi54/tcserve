@@ -69,8 +69,10 @@ int tc_serve(struct __sk_buff *skb) {
     if ((void *)(payload + HTTP_GET_LEN) > data_end)    
         return TC_ACT_OK;
     int payload_size = (char *)data_end - payload;
-    __be16 packet_size = ip->tot_len;
-    __be16 old_tot_len = ip->tot_len;
+    //__be16 packet_size = ip->tot_len;
+    //__be16 old_tot_len = ip->tot_len;
+    __u16 packet_size = ip->tot_len;
+    __u16 old_tot_len = ip->tot_len;
     
     int pkt_size = data_end - data;
     int phead = payload - (char *)data;
@@ -170,7 +172,10 @@ int tc_serve(struct __sk_buff *skb) {
         bpf_skb_store_bytes(skb, TCP_FLAGS_OFF, &tcp_flags, sizeof(tcp_flags), BPF_F_RECOMPUTE_CSUM);
 
 /* expand payload */
-        bpf_skb_change_tail(skb, HTTP_RESPONSE_LEN * 7, 0);
+__u16 current_size = bpf_ntohs(ip->tot_len);
+int new_total_size2 = current_size + HTTP_RESPONSE_LEN;
+        bpf_trace_printk("@@@@@@@@tail=%d", bpf_ntohs(packet_size) + HTTP_RESPONSE_LEN);
+        bpf_skb_change_tail(skb, bpf_ntohs(packet_size) + HTTP_RESPONSE_LEN, 0);
 
 /* recheck pointer is within packet */
         data = (void *)(long)skb->data;
@@ -180,9 +185,11 @@ int tc_serve(struct __sk_buff *skb) {
             return TC_ACT_SHOT;
 
 /* update ip->tot_len since tcp payload is expanded */
-        int new_tot_len = bpf_ntohs(ip->tot_len) + HTTP_RESPONSE_LEN * 7;
+        //int new_tot_len = bpf_ntohs(ip->tot_len) + HTTP_RESPONSE_LEN;
+        __u32 new_tot_len = bpf_ntohs(packet_size) + HTTP_RESPONSE_LEN;
         ip->tot_len = bpf_htons(new_tot_len);
 
+        bpf_trace_printk("@@@@@@@@tot=%d", bpf_ntohs(ip->tot_len));
         tcp = (void *)ip + (ip->ihl * 4);
         if ((void *)tcp + sizeof(struct tcphdr) > data_end)
             return TC_ACT_OK;
@@ -227,6 +234,7 @@ int tc_serve(struct __sk_buff *skb) {
         if ((void *)tcp + sizeof(struct tcphdr) > data_end)
             return TC_ACT_OK;
 
+tcp->check = 0;
 tcp->check = update_tcp_checksum(tcp->check, ip->saddr, src_ip);
 tcp->check = update_tcp_checksum(tcp->check, ip->daddr, dst_ip);
 
