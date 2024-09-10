@@ -16,7 +16,16 @@
 #define IP_CSUM_OFF (ETH_HLEN + offsetof(struct iphdr, check))
 #define TCP_CSUM_OFF (ETH_HLEN + sizeof(struct iphdr) + offsetof(struct tcphdr, check))
 #define TCP_SRC_OFF (ETH_HLEN + sizeof(struct iphdr) + offsetof(struct tcphdr, source))
+#define TCP_DST_OFF (ETH_HLEN + sizeof(struct iphdr) + offsetof(struct tcphdr, dest))
 #define TCP_SEQ_OFF (ETH_HLEN + sizeof(struct iphdr) + offsetof(struct tcphdr, seq))
+#define TCP_ACKSEQ_OFF (ETH_HLEN + sizeof(struct iphdr) + offsetof(struct tcphdr, ack_seq))
+#define TCP_FLAGS_OFF (ETH_HLEN + sizeof(struct iphdr) + 13)
+
+static __always_inline __u16 update_tcp_checksum(__u16 old_csum, __u32 old_val, __u32 new_val) {
+    __u32 csum = bpf_csum_diff((__be32 *)&old_val, sizeof(old_val), (__be32 *)&new_val, sizeof(new_val), ~old_csum);
+    return ~csum;
+}
+
 
 /*
 struct pseudo_header {
@@ -117,28 +126,48 @@ int tc_serve(struct __sk_buff *skb) {
         __be16 src_port = tcp->source;
         __be16 dst_port = tcp->dest;
         //tcp->source = htons(ntohs(dst_port));
-        tcp->dest = htons(ntohs(src_port));
-
+        //tcp->dest = htons(ntohs(src_port));
         bpf_skb_store_bytes(skb, TCP_SRC_OFF, &dst_port, 2, BPF_F_RECOMPUTE_CSUM);
+        bpf_skb_store_bytes(skb, TCP_DST_OFF, &src_port, 2, BPF_F_RECOMPUTE_CSUM);
 
 /* update seq/ack_seq */
         void *data = (void *)(long)skb->data;
         void *data_end = (void *)(long)skb->data_end;
-        struct tcphdr *tcp = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
-        if ((void *)(tcp + sizeof(struct tcphdr)) > data_end)
+        struct iphdr *ip = data + sizeof(struct ethhdr);
+        if ((void *)ip + sizeof(struct iphdr) > data_end)
+            return TC_ACT_OK;
+        struct tcphdr *tcp = (void *)ip + (ip->ihl * 4);
+        if ((void *)tcp + sizeof(struct tcphdr) > data_end)
             return TC_ACT_OK;
         uint32_t prevseq = ntohl(tcp->seq);
-        __be32 prev_ackseq = tcp->ack_seq;
-        tcp->ack_seq = (__be32)htonl(prevseq + payload_size); // naze +1 sinakute yoi?
-        tcp->seq = prev_ackseq;
-        bpf_trace_printk("prevseq=%ld, paysize=%ld, newack=%ld", prevseq, payload_size, ntohl(tcp->ack_seq));
+        uint32_t prevackseq = tcp->ack_seq;
+        //tcp->seq = tcp->ack_seq;
+        //tcp->ack_seq = (__be32)htonl(prevseq + payload_size); // naze +1 sinakute yoi?
+        uint32_t newackseq = (__be32)htonl(prevseq + payload_size); // naze +1 sinakute yoi?
+        bpf_skb_store_bytes(skb, TCP_SEQ_OFF, &prevackseq, 4, BPF_F_RECOMPUTE_CSUM);
+        bpf_skb_store_bytes(skb, TCP_ACKSEQ_OFF, &newackseq, 4, BPF_F_RECOMPUTE_CSUM);
         
 /* update tcp flag */
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        ip = data + sizeof(struct ethhdr);
+        if ((void *)ip + sizeof(struct iphdr) > data_end)
+            return TC_ACT_OK;
+        tcp = (void *)ip + (ip->ihl * 4);
+        if ((void *)tcp + sizeof(struct tcphdr) > data_end)
+            return TC_ACT_OK;
+
+         /*
         tcp->fin = 0;
         tcp->syn = 0;
         tcp->rst = 0;
         tcp->psh = 1;
         tcp->ack = 1;
+        */
+        u8 tcp_flags = 0;
+        tcp_flags |= (1 << 3);
+        tcp_flags |= (1 << 4);
+        bpf_skb_store_bytes(skb, TCP_FLAGS_OFF, &tcp_flags, sizeof(tcp_flags), BPF_F_RECOMPUTE_CSUM);
 
 /* expand payload */
         bpf_skb_change_tail(skb, HTTP_RESPONSE_LEN * 7, 0);
@@ -146,29 +175,32 @@ int tc_serve(struct __sk_buff *skb) {
 /* recheck pointer is within packet */
         data = (void *)(long)skb->data;
         data_end = (void *)(long)skb->data_end;
-        eth = data;
-        if ((void *)(eth + sizeof(struct ethhdr)) > data_end) return TC_ACT_OK;
         ip = data + sizeof(struct ethhdr);
-        if ((void *)(ip + sizeof(struct iphdr)) > data_end) return TC_ACT_SHOT;
+        if ((void *)ip + sizeof(struct iphdr) > data_end)
+            return TC_ACT_SHOT;
 
 /* update ip->tot_len since tcp payload is expanded */
-        int new_tot_len = bpf_ntohs(ip->tot_len) + HTTP_RESPONSE_LEN;
+        int new_tot_len = bpf_ntohs(ip->tot_len) + HTTP_RESPONSE_LEN * 7;
         ip->tot_len = bpf_htons(new_tot_len);
 
-        tcp = (struct tcphdr *)((char *)ip + sizeof(struct iphdr));
-        if ((void *)tcp + sizeof(struct tcphdr) > data_end) return TC_ACT_OK;
+        tcp = (void *)ip + (ip->ihl * 4);
+        if ((void *)tcp + sizeof(struct tcphdr) > data_end)
+            return TC_ACT_OK;
 
         bpf_trace_printk("after adjust, src %u, dst %u", ntohs(tcp->source), ntohs(tcp->dest));
         bpf_trace_printk("after adjust, payloadsize=%d, packaetsize=%d", payload_size, pkt_size);
         bpf_trace_printk("after adjust, phead=%d, ptail=%d", phead, phead+payload_size);
 
-        if ((void *)tcp + tcp_data_offset > data_end) return TC_ACT_OK;
-        payload = (char *)tcp + tcp_data_offset;
-        if ((void *)(payload + HTTP_RESPONSE_LEN) > data_end) return TC_ACT_OK;
+        payload = (void *)tcp + (tcp->doff * 4);
+        if ((void *)payload + HTTP_RESPONSE_LEN > data_end)
+            return TC_ACT_OK;
 
 /* rewrite payload */
-        memcpy(payload, HTTP_RESPONSE, HTTP_RESPONSE_LEN);
+        char http_response[HTTP_RESPONSE_LEN] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!";
+        bpf_skb_store_bytes(skb, (__u32)((void *)payload - (void *)data), http_response, HTTP_RESPONSE_LEN, BPF_F_RECOMPUTE_CSUM);
+        //memcpy(payload, HTTP_RESPONSE, HTTP_RESPONSE_LEN);
         bpf_trace_printk("%s", payload); //'HTTP/1.1 200 OK
+  
 
 /* print payload after change
         #pragma clang loop unroll(full)
@@ -181,12 +213,30 @@ int tc_serve(struct __sk_buff *skb) {
 */
 
 /* update ip csum */
+        data = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        ip = data + sizeof(struct ethhdr);
+        if ((void *)ip + sizeof(struct iphdr) > data_end)
+            return TC_ACT_SHOT;
         csum_replace2(&ip->check, src_ip, ip->saddr);
         csum_replace2(&ip->check, dst_ip, ip->daddr);
         csum_replace2(&ip->check, old_tot_len, ip->tot_len);
 
-
 /* update tcp csum */
+        tcp = (void *)ip + (ip->ihl * 4);
+        if ((void *)tcp + sizeof(struct tcphdr) > data_end)
+            return TC_ACT_OK;
+
+tcp->check = update_tcp_checksum(tcp->check, ip->saddr, src_ip);
+tcp->check = update_tcp_checksum(tcp->check, ip->daddr, dst_ip);
+
+__u16 tcp_length = bpf_ntohs(ip->tot_len) - (ip->ihl * 4);
+tcp->check = update_tcp_checksum(tcp->check, 0, (__u32)tcp_length);
+
+__u16 new_tcp_check = tcp->check;
+bpf_skb_store_bytes(skb, TCP_CSUM_OFF, &new_tcp_check, sizeof(new_tcp_check), 0);
+
+
 /*
         csum_replace2(&tcp->check, src_port, tcp->source);
         csum_replace2(&tcp->check, dst_port, tcp->dest);
